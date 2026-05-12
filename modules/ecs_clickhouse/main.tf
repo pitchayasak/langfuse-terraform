@@ -32,7 +32,7 @@ locals {
 <clickhouse>
     <logger>
         <console>1</console>
-        <level>information</level>
+        <level>warning</level>
     </logger>
     <storage_configuration>
         <disks>

@@ -146,6 +146,18 @@ data "aws_iam_policy_document" "clickhouse_task" {
     ]
     resources = ["*"]
   }
+
+  # ECS Exec (aws ecs execute-command) — requires SSM messages channel
+  statement {
+    sid = "ECSExec"
+    actions = [
+      "ssmmessages:CreateControlChannel",
+      "ssmmessages:CreateDataChannel",
+      "ssmmessages:OpenControlChannel",
+      "ssmmessages:OpenDataChannel",
+    ]
+    resources = ["*"]
+  }
 }
 
 resource "aws_iam_role_policy" "clickhouse_task" {
