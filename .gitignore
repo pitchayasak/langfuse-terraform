@@ -1,0 +1,48 @@
+# Terraform state & cache
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+*.tfplan
+tfplan
+
+# Variable files with real values (keep .example)
+terraform.tfvars
+
+# Crash logs
+crash.log
+crash.*.log
+
+# Override files
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# CLI config
+.terraformrc
+terraform.rc
+
+# Claude Code session files
+.claude/
+
+# Generated presentation files
+*.pptx
+make-slides.js
+node_modules/
+package.json
+package-lock.json
+slide_previews/
+
+# Log files
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo

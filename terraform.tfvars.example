@@ -1,0 +1,44 @@
+# Copy to terraform.tfvars and adjust values
+# Run iam-setup/create-role.sh first to get the role ARN
+
+terraform_role_arn = "arn:aws:iam::<ACCOUNT_ID>:role/langfuse-terraform-deployer"
+
+aws_region   = "us-east-1"
+environment  = "prod"
+project_name = "langfuse"
+vpc_cidr     = "10.0.0.0/16"
+
+# Databases
+db_instance_class      = "db.r6g.large"
+db_backup_retention    = 3
+db_deletion_protection = false
+db_skip_final_snapshot = true
+
+# Cache
+cache_node_type = "cache.t3.small"
+
+# Container images (defaults use public Docker Hub)
+# To use ECR after pushing images, override these:
+# clickhouse_image      = "<account>.dkr.ecr.us-east-1.amazonaws.com/langfuse-clickhouse:24.12.3.47"
+# langfuse_web_image    = "<account>.dkr.ecr.us-east-1.amazonaws.com/langfuse-web:3"
+# langfuse_worker_image = "<account>.dkr.ecr.us-east-1.amazonaws.com/langfuse-worker:3"
+
+# ECS sizing
+clickhouse_cpu    = 1024
+clickhouse_memory = 8192
+langfuse_cpu      = 2048
+langfuse_memory   = 4096
+
+# Auto-scaling
+web_min_capacity        = 1
+web_max_capacity        = 2
+web_cpu_scale_threshold = 70
+worker_desired_count    = 1
+
+# Logging
+log_retention_days     = 7
+rds_log_retention_days = 3
+
+# App config
+telemetry_enabled             = false
+experimental_features_enabled = false
