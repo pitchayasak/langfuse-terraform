@@ -99,6 +99,7 @@ locals {
             <port>9181</port>
         </node>
     </zookeeper>
+    <filesystem_with_renameat2_enabled>0</filesystem_with_renameat2_enabled>
 </clickhouse>
 XML
 

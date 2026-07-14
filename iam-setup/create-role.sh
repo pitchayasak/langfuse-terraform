@@ -46,7 +46,11 @@ EOF
 echo ""
 echo "==> Creating IAM role: ${ROLE_NAME}..."
 if aws iam get-role --role-name "${ROLE_NAME}" &>/dev/null; then
-  echo "    Role already exists, skipping creation."
+  echo "    Role already exists, updating trust policy..."
+  aws iam update-assume-role-policy \
+    --role-name "${ROLE_NAME}" \
+    --policy-document "${TRUST_POLICY}"
+  echo "    Trust policy updated."
 else
   aws iam create-role \
     --role-name "${ROLE_NAME}" \

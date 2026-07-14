@@ -104,6 +104,8 @@ terraform plan -out=tfplan
 terraform apply tfplan
 ```
 
+> **หากเจอ error `ResourceAlreadyExistsException` สำหรับ RDS log group** ให้ดู [Step 4 — Import RDS Log Group](#step-4--import-rds-log-group) แล้วรัน `terraform apply -auto-approve` ต่อ
+
 After apply completes (≈ 15–20 minutes), Terraform prints:
 
 ```
@@ -161,7 +163,31 @@ aws secretsmanager get-secret-value \
 
 ---
 
-## Step 4 — Push Custom Images to ECR (optional)
+## Step 4 — Import RDS Log Group
+
+Aurora สร้าง CloudWatch log group อัตโนมัติเมื่อ cluster เริ่มเขียน log ทำให้ Terraform ไม่สามารถสร้างซ้ำได้ ต้อง import เข้า state ก่อนจึงจะ apply ต่อได้
+
+```bash
+terraform import module.database.aws_cloudwatch_log_group.rds \
+  /aws/rds/cluster/<project_name>-<environment>-db/postgresql
+```
+
+ตัวอย่าง (ใช้ค่า default `project_name = "langfuse"`, `environment = "prod"`):
+```bash
+terraform import module.database.aws_cloudwatch_log_group.rds \
+  /aws/rds/cluster/langfuse-prod-db/postgresql
+```
+
+แล้ว apply ต่อ:
+```bash
+terraform apply -auto-approve
+```
+
+> **หมายเหตุ:** ต้องทำขั้นตอนนี้ทุกครั้งที่รัน `terraform apply` ครั้งแรกหลังสร้าง Aurora cluster ใหม่ (รวมถึงหลัง `terraform destroy` แล้วสร้างใหม่)
+
+---
+
+## Step 5 — Push Custom Images to ECR (optional)
 
 Terraform creates three ECR repositories. To use them instead of public Docker Hub images:
 
@@ -199,6 +225,35 @@ terraform destroy
 
 > S3 buckets have `force_destroy = true` — all objects will be deleted permanently.  
 > Secrets Manager secrets have `recovery_window_in_days = 0` — deleted immediately.
+
+### เก็บ AWS Backup snapshots ไว้หลัง destroy
+
+โดย default `terraform destroy` จะพยายามลบ backup vault แต่จะ **error** ถ้ายังมี recovery points อยู่ข้างใน (`Non-empty backup vault`)
+
+ถ้าต้องการเก็บ snapshots ไว้ ให้ detach vault ออกจาก Terraform state ก่อน destroy:
+
+```bash
+terraform state rm module.backup.aws_backup_vault.langfuse
+terraform state rm module.backup.aws_backup_plan.efs
+terraform state rm module.backup.aws_backup_selection.efs
+```
+
+แล้วค่อย destroy:
+```bash
+terraform destroy
+```
+
+Vault และ recovery points จะยังอยู่ใน AWS ลบด้วยมือได้ภายหลังผ่าน AWS Console หรือ CLI:
+```bash
+# ลบ recovery points ทั้งหมดก่อน แล้วค่อยลบ vault
+aws backup list-recovery-points-by-backup-vault \
+  --backup-vault-name <prefix>-vault --region <region> \
+  --query 'RecoveryPoints[].RecoveryPointArn' --output text | \
+  tr '\t' '\n' | xargs -I{} aws backup delete-recovery-point \
+  --backup-vault-name <prefix>-vault --recovery-point-arn {} --region <region>
+
+aws backup delete-backup-vault --backup-vault-name <prefix>-vault --region <region>
+```
 
 
 ---
@@ -505,6 +560,24 @@ aws ecs update-service --cluster <cluster> --service <svc>-clickhouse --force-ne
 **วิธีแก้:** ใช้ WSL2 แทน:
 ```bash
 wsl -d Ubuntu-20.04 -- bash -c "cd /mnt/d/path/to/langfuse_terraform && terraform apply"
+```
+
+---
+
+### RDS CloudWatch Log Group ถูกสร้างอัตโนมัติทำให้ `terraform apply` ล้มเหลว
+
+**อาการ:**
+```
+Error: creating CloudWatch Logs Log Group (/aws/rds/cluster/<prefix>-db/postgresql):
+ResourceAlreadyExistsException: The specified log group already exists
+```
+
+**สาเหตุ:** Aurora สร้าง log group `/aws/rds/cluster/<prefix>-db/postgresql` อัตโนมัติเมื่อ cluster เริ่มเขียน log ก่อนที่ Terraform จะสร้าง resource นั้น
+
+**วิธีแก้:** Import log group เข้า Terraform state แล้ว apply ต่อ:
+```bash
+terraform import module.database.aws_cloudwatch_log_group.rds /aws/rds/cluster/<prefix>-db/postgresql
+terraform apply -auto-approve
 ```
 
 ---

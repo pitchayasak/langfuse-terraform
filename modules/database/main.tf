@@ -85,4 +85,8 @@ resource "aws_cloudwatch_log_group" "rds" {
   retention_in_days = var.log_retention_days
 
   tags = { Name = "${var.name_prefix}-rds-logs" }
+
+  lifecycle {
+    ignore_changes = [tags]
+  }
 }
