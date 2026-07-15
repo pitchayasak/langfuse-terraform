@@ -57,7 +57,7 @@ locals {
         <storage_policy>s3_main</storage_policy>
     </merge_tree>
     <remote_servers>
-        <langfuse_cluster>
+        <default>
             <shard>
                 <weight>1</weight>
                 <internal_replication>false</internal_replication>
@@ -68,10 +68,10 @@ locals {
                     <password>${var.clickhouse_password}</password>
                 </replica>
             </shard>
-        </langfuse_cluster>
+        </default>
     </remote_servers>
     <macros>
-        <cluster>langfuse_cluster</cluster>
+        <cluster>default</cluster>
         <shard>01</shard>
         <replica>01</replica>
     </macros>
