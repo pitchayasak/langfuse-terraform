@@ -219,8 +219,8 @@ resource "aws_ecs_service" "clickhouse" {
     registry_arn = var.cloud_map_service_arn
   }
 
-  deployment_minimum_healthy_percent = 50
-  deployment_maximum_percent         = 200
+  deployment_minimum_healthy_percent = 0
+  deployment_maximum_percent         = 100
 
   enable_execute_command = true
 
