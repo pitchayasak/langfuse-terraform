@@ -362,8 +362,7 @@ aws ecs execute-command \
   --region $REGION \
   --command "clickhouse-client -u langfuse --password \$CLICKHOUSE_PASSWORD \
     --query \"BACKUP DATABASE langfuse \
-    TO S3('https://$CH_BUCKET.s3.$REGION.amazonaws.com/native-backups/\$(date +%Y-%m-%d)/', '') \
-    SETTINGS use_environment_credentials=1\""
+    TO S3('https://$CH_BUCKET.s3.$REGION.amazonaws.com/native-backups/\$(date +%Y-%m-%d)/', '', '')\""
 ```
 
 **Check backup status:**
@@ -395,8 +394,7 @@ aws ecs execute-command \
   --region $REGION \
   --command "clickhouse-client -u langfuse --password \$CLICKHOUSE_PASSWORD \
     --query \"RESTORE DATABASE langfuse \
-    FROM S3('https://$CH_BUCKET.s3.$REGION.amazonaws.com/native-backups/2025-01-15/', '') \
-    SETTINGS use_environment_credentials=1\""
+    FROM S3('https://$CH_BUCKET.s3.$REGION.amazonaws.com/native-backups/2025-01-15/', '', '')\""
 
 # Restart services
 aws ecs update-service --cluster $CLUSTER --service ${CLUSTER}-web --desired-count 1 --region $REGION
