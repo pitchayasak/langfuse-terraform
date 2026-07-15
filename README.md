@@ -342,23 +342,27 @@ ClickHouse's built-in `BACKUP` command creates a consistent snapshot of both sch
 **Run a backup:**
 
 ```bash
-# 1. Get the running ECS task ID
+# 1. Get cluster name, task ID, and ClickHouse S3 bucket from Terraform outputs
 CLUSTER=$(terraform output -raw ecs_cluster_name)
-TASK_ID=$(aws ecs list-tasks --cluster $CLUSTER --family langfuse-prod-clickhouse \
-  --query 'taskArns[0]' --output text | awk -F/ '{print $NF}')
+CH_BUCKET=$(terraform output -raw s3_clickhouse_bucket_name)
+REGION=ap-southeast-7   # เปลี่ยนตาม region ที่ deploy
 
-BLOB_BUCKET=$(terraform output -raw s3_blob_bucket_name)
-REGION=us-east-1
+TASK_ARN=$(aws ecs list-tasks \
+  --cluster $CLUSTER \
+  --service-name ${CLUSTER}-clickhouse \
+  --region $REGION \
+  --query 'taskArns[0]' --output text)
 
 # 2. Run backup via ECS Exec
 aws ecs execute-command \
   --cluster $CLUSTER \
-  --task $TASK_ID \
+  --task $TASK_ARN \
   --container clickhouse \
   --interactive \
+  --region $REGION \
   --command "clickhouse-client -u langfuse --password \$CLICKHOUSE_PASSWORD \
     --query \"BACKUP DATABASE langfuse \
-    TO S3('https://$BLOB_BUCKET.s3.$REGION.amazonaws.com/clickhouse-backups/\$(date +%Y-%m-%d)/', '') \
+    TO S3('https://$CH_BUCKET.s3.$REGION.amazonaws.com/native-backups/\$(date +%Y-%m-%d)/', '') \
     SETTINGS use_environment_credentials=1\""
 ```
 
@@ -367,9 +371,10 @@ aws ecs execute-command \
 ```bash
 aws ecs execute-command \
   --cluster $CLUSTER \
-  --task $TASK_ID \
+  --task $TASK_ARN \
   --container clickhouse \
   --interactive \
+  --region $REGION \
   --command "clickhouse-client -u langfuse --password \$CLICKHOUSE_PASSWORD \
     --query \"SELECT * FROM system.backups FORMAT Vertical\""
 ```
@@ -377,28 +382,29 @@ aws ecs execute-command \
 **Restore from ClickHouse native backup:**
 
 ```bash
-# Stop the web and worker services first to prevent writes during restore
-aws ecs update-service --cluster $CLUSTER --service langfuse-prod-web --desired-count 0
-aws ecs update-service --cluster $CLUSTER --service langfuse-prod-worker --desired-count 0
+# Stop web and worker first to prevent writes during restore
+aws ecs update-service --cluster $CLUSTER --service ${CLUSTER}-web --desired-count 0 --region $REGION
+aws ecs update-service --cluster $CLUSTER --service ${CLUSTER}-worker --desired-count 0 --region $REGION
 
-# Restore (replace the date with the backup you want)
+# Restore (แทนที่ 2025-01-15 ด้วยวันที่ backup ที่ต้องการ)
 aws ecs execute-command \
   --cluster $CLUSTER \
-  --task $TASK_ID \
+  --task $TASK_ARN \
   --container clickhouse \
   --interactive \
+  --region $REGION \
   --command "clickhouse-client -u langfuse --password \$CLICKHOUSE_PASSWORD \
     --query \"RESTORE DATABASE langfuse \
-    FROM S3('https://$BLOB_BUCKET.s3.$REGION.amazonaws.com/clickhouse-backups/2025-01-15/', '') \
+    FROM S3('https://$CH_BUCKET.s3.$REGION.amazonaws.com/native-backups/2025-01-15/', '') \
     SETTINGS use_environment_credentials=1\""
 
 # Restart services
-aws ecs update-service --cluster $CLUSTER --service langfuse-prod-web --desired-count 1
-aws ecs update-service --cluster $CLUSTER --service langfuse-prod-worker --desired-count 1
+aws ecs update-service --cluster $CLUSTER --service ${CLUSTER}-web --desired-count 1 --region $REGION
+aws ecs update-service --cluster $CLUSTER --service ${CLUSTER}-worker --desired-count 1 --region $REGION
 ```
 
-> ClickHouse native backup stores data in the **blob S3 bucket** under `clickhouse-backups/` prefix.  
-> For critical environments, consider using a separate dedicated S3 bucket.
+> ClickHouse native backup เก็บใน **ClickHouse S3 bucket** (`s3_clickhouse_bucket_name`) ใต้ prefix `native-backups/`  
+> แยกจาก S3 data parts ที่อยู่ใต้ prefix `data/` ในถังเดียวกัน
 
 ---
 

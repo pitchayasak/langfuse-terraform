@@ -52,3 +52,8 @@ output "s3_events_bucket_name" {
   description = "S3 bucket for events and batch exports"
   value       = module.storage.events_bucket_name
 }
+
+output "s3_clickhouse_bucket_name" {
+  description = "S3 bucket for ClickHouse data parts and native backups"
+  value       = module.storage.clickhouse_bucket_name
+}
