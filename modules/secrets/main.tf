@@ -43,7 +43,7 @@ resource "aws_secretsmanager_secret" "clickhouse" {
 resource "aws_secretsmanager_secret_version" "clickhouse" {
   secret_id = aws_secretsmanager_secret.clickhouse.id
   secret_string = jsonencode({
-    db       = "langfuse"
+    db       = "langfuse_system"
     user     = "langfuse"
     password = random_password.clickhouse_password.result
   })
