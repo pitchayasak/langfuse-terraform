@@ -6,8 +6,31 @@ locals {
 
   container_definitions = jsonencode([
     {
+      name      = "wait-for-clickhouse"
+      image     = "public.ecr.aws/docker/library/busybox:latest"
+      essential = false
+
+      command = [
+        "sh", "-c",
+        "i=0; until wget -q -T 3 -O - http://clickhouse.langfuse.local:8123/ping; do i=$((i+1)); if [ $i -ge 40 ]; then echo 'ClickHouse not reachable after timeout'; exit 1; fi; echo \"waiting for clickhouse ($i/40)...\"; sleep 3; done; echo clickhouse is up"
+      ]
+
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          "awslogs-group"         = var.log_group_name
+          "awslogs-region"        = var.aws_region
+          "awslogs-stream-prefix" = "wait-for-clickhouse"
+        }
+      }
+    },
+    {
       name  = "langfuse-worker"
       image = var.langfuse_worker_image
+
+      dependsOn = [
+        { containerName = "wait-for-clickhouse", condition = "SUCCESS" }
+      ]
 
       portMappings = [
         { containerPort = 3030, protocol = "tcp" }
