@@ -132,6 +132,23 @@ data "aws_iam_policy_document" "clickhouse_task" {
   }
 
   statement {
+    sid = "S3BackupAccess"
+    actions = [
+      "s3:GetObject",
+      "s3:PutObject",
+      "s3:DeleteObject",
+      "s3:ListBucket",
+      "s3:GetBucketLocation",
+      "s3:AbortMultipartUpload",
+      "s3:ListMultipartUploadParts",
+    ]
+    resources = [
+      "arn:aws:s3:::psena-poc-th",
+      "arn:aws:s3:::psena-poc-th/*",
+    ]
+  }
+
+  statement {
     sid       = "SecretsRead"
     actions   = ["secretsmanager:GetSecretValue"]
     resources = ["arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:${var.name_prefix}/*"]
