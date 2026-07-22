@@ -154,10 +154,10 @@ aws secretsmanager get-secret-value \
   --secret-id "$PREFIX/clickhouse" \
   --region $REGION \
   --query SecretString --output text
-# {"db":"langfuse","user":"langfuse","password":"xxxx..."}
+# {"db":"langfuse_system","user":"langfuse","password":"xxxx..."}
 ```
 
-> ⚠ ค่า `db` ใน secret นี้ (`modules/secrets/main.tf`) เป็นข้อมูล informational เท่านั้น ไม่มี container ไหนอ่านค่านี้ไปใช้จริง — database ที่ Langfuse ใช้งานจริงกำหนดผ่าน env var `CLICKHOUSE_DB` ใน `modules/ecs_langfuse_web/main.tf`/`modules/ecs_langfuse_worker/main.tf` (ปัจจุบันคือ `langfuse_system`) ค่า `db` ใน secret นี้ยังไม่ได้อัปเดตตาม จึงอาจทำให้เข้าใจผิดได้ว่า database คือ `langfuse`
+> ค่า `db` ใน secret นี้ (`modules/secrets/main.tf`) เป็นข้อมูล informational เท่านั้น ไม่มี container ไหนอ่านค่านี้ไปใช้จริง — database ที่ Langfuse ใช้งานจริงกำหนดผ่าน env var `CLICKHOUSE_DB` ใน `modules/ecs_langfuse_web/main.tf`/`modules/ecs_langfuse_worker/main.tf` โดยตรง (ปัจจุบันซิงค์กันแล้วที่ `langfuse_system`)
 
 **ดูผ่าน AWS Console:**
 
