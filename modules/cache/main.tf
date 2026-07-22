@@ -5,6 +5,21 @@ resource "aws_elasticache_subnet_group" "this" {
   tags = { Name = "${var.name_prefix}-cache-subnet" }
 }
 
+# BullMQ (used by the Langfuse worker for job queues) requires Redis/Valkey to
+# never evict keys under memory pressure — the default parameter group ships
+# with "volatile-lru", which silently drops queue data instead of erroring.
+resource "aws_elasticache_parameter_group" "this" {
+  name   = "${var.name_prefix}-cache-params"
+  family = "valkey7"
+
+  parameter {
+    name  = "maxmemory-policy"
+    value = "noeviction"
+  }
+
+  tags = { Name = "${var.name_prefix}-cache-params" }
+}
+
 resource "aws_elasticache_replication_group" "this" {
   replication_group_id = "${var.name_prefix}-cache"
   description          = "Langfuse Valkey cache"
@@ -17,8 +32,9 @@ resource "aws_elasticache_replication_group" "this" {
   num_cache_clusters         = 1
   automatic_failover_enabled = false
 
-  subnet_group_name  = aws_elasticache_subnet_group.this.name
-  security_group_ids = [var.redis_server_sg_id]
+  parameter_group_name = aws_elasticache_parameter_group.this.name
+  subnet_group_name    = aws_elasticache_subnet_group.this.name
+  security_group_ids   = [var.redis_server_sg_id]
 
   at_rest_encryption_enabled = true
   transit_encryption_enabled = true
