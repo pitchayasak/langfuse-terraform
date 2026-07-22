@@ -157,6 +157,8 @@ aws secretsmanager get-secret-value \
 # {"db":"langfuse","user":"langfuse","password":"xxxx..."}
 ```
 
+> ⚠ ค่า `db` ใน secret นี้ (`modules/secrets/main.tf`) เป็นข้อมูล informational เท่านั้น ไม่มี container ไหนอ่านค่านี้ไปใช้จริง — database ที่ Langfuse ใช้งานจริงกำหนดผ่าน env var `CLICKHOUSE_DB` ใน `modules/ecs_langfuse_web/main.tf`/`modules/ecs_langfuse_worker/main.tf` (ปัจจุบันคือ `langfuse_system`) ค่า `db` ใน secret นี้ยังไม่ได้อัปเดตตาม จึงอาจทำให้เข้าใจผิดได้ว่า database คือ `langfuse`
+
 **ดูผ่าน AWS Console:**
 
 `Secrets Manager` → ค้นหาชื่อ secret → **Retrieve secret value**
@@ -361,7 +363,7 @@ aws ecs execute-command \
   --interactive \
   --region $REGION \
   --command "clickhouse-client -u langfuse --password \$CLICKHOUSE_PASSWORD \
-    --query \"BACKUP DATABASE langfuse \
+    --query \"BACKUP DATABASE langfuse_system \
     TO S3('https://$CH_BUCKET.s3.$REGION.amazonaws.com/native-backups/\$(date +%Y-%m-%d)/', '', '')\""
 ```
 
@@ -393,7 +395,7 @@ aws ecs execute-command \
   --interactive \
   --region $REGION \
   --command "clickhouse-client -u langfuse --password \$CLICKHOUSE_PASSWORD \
-    --query \"RESTORE DATABASE langfuse \
+    --query \"RESTORE DATABASE langfuse_system \
     FROM S3('https://$CH_BUCKET.s3.$REGION.amazonaws.com/native-backups/2025-01-15/', '', '')\""
 
 # Restart services
@@ -417,7 +419,17 @@ Langfuse v3 สร้าง ClickHouse tables ด้วย `ReplicatedMergeTree`
 Coordination (Keeper) is not configured but ReplicatedMergeTree is used
 ```
 
-การที่ config มี `<macros>` (`{cluster}`, `{shard}`, `{replica}`) ก็เพราะ Langfuse DDL ใช้ค่าเหล่านี้ใน `ON CLUSTER langfuse_cluster` statement
+การที่ config มี `<macros>` (`{cluster}`, `{shard}`, `{replica}`) ก็เพราะ Langfuse DDL ใช้ค่าเหล่านี้ใน `ON CLUSTER default` statement (ชื่อ cluster คือ `default` ไม่ใช่ `langfuse_cluster` — ดูเหตุผลที่ `modules/ecs_clickhouse/main.tf`)
+
+> **สำคัญ:** ฝั่ง ClickHouse server ตั้งชื่อ cluster ให้ตรงกันอย่างเดียวไม่พอ — Langfuse จะออกคำสั่ง `ON CLUSTER` DDL ก็ต่อเมื่อ container `langfuse-web`/`langfuse-worker` ได้รับ env var `CLICKHOUSE_CLUSTER_ENABLED=true` เท่านั้น ถ้าไม่ได้ตั้งค่านี้ Langfuse จะสร้างตารางแบบไม่ใช้ `ON CLUSTER` เลย ทำให้การตั้งชื่อ cluster ให้ตรงกันไม่มีผลอะไรจริง
+
+env var ที่เกี่ยวข้องกับ database/cluster ของ ClickHouse ที่ต้องตั้งใน `modules/ecs_langfuse_web/main.tf` และ `modules/ecs_langfuse_worker/main.tf`:
+
+| Env var | ค่า | ผลลัพธ์ |
+|---|---|---|
+| `CLICKHOUSE_DB` | `langfuse_system` | database ที่ Langfuse ใช้เก็บตาราง (`traces`, `observations`, `scores` ฯลฯ) — **ต้องตั้งที่ web/worker โดยตรง** การใส่ path ต่อท้าย `CLICKHOUSE_MIGRATION_URL` ไม่มีผลใด ๆ |
+| `CLICKHOUSE_CLUSTER_ENABLED` | `true` | เปิดให้ Langfuse ออกคำสั่ง DDL แบบ `ON CLUSTER` |
+| `CLICKHOUSE_CLUSTER_NAME` | `default` | ชื่อ cluster ที่ใช้ใน `ON CLUSTER` — ต้องตรงกับชื่อใน `remote_servers`/`<macros><cluster>` ของ `modules/ecs_clickhouse/main.tf` |
 
 ### สถาปัตยกรรม: Embedded Keeper
 
