@@ -2,7 +2,7 @@ locals {
   database_url             = "postgresql://langfuse:${var.db_password}@${var.db_cluster_endpoint}:5432/langfuse"
   redis_url                = "rediss://${var.redis_primary_endpoint}:6379"
   clickhouse_url           = "http://clickhouse.langfuse.local:8123"
-  clickhouse_migration_url = "clickhouse://clickhouse.langfuse.local:9000/langfuse"
+  clickhouse_migration_url = "clickhouse://clickhouse.langfuse.local:9000"
 
   container_definitions = jsonencode([
     {
@@ -20,6 +20,9 @@ locals {
         { name = "REDIS_CONNECTION_STRING", value = local.redis_url },
         { name = "CLICKHOUSE_URL", value = local.clickhouse_url },
         { name = "CLICKHOUSE_MIGRATION_URL", value = local.clickhouse_migration_url },
+        { name = "CLICKHOUSE_DB", value = "langfuse_system" },
+        { name = "CLICKHOUSE_CLUSTER_ENABLED", value = "true" },
+        { name = "CLICKHOUSE_CLUSTER_NAME", value = "default" },
         { name = "CLICKHOUSE_USER", value = "langfuse" },
         { name = "LANGFUSE_S3_MEDIA_UPLOAD_BUCKET", value = var.blob_bucket_name },
         { name = "LANGFUSE_S3_BATCH_EXPORT_BUCKET", value = var.events_bucket_name },

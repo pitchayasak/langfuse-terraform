@@ -136,7 +136,7 @@ XML
       ]
 
       environment = [
-        { name = "CLICKHOUSE_DB", value = "langfuse" },
+        { name = "CLICKHOUSE_DB", value = "langfuse_system" },
         { name = "CLICKHOUSE_USER", value = "langfuse" },
       ]
 
