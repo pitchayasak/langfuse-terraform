@@ -34,7 +34,32 @@
 
 ---
 
-## 3. Out of Scope
+## 3. Fast Iteration for Testing
+
+การทดสอบ backup/restore ของ ClickHouse ส่วนใหญ่ (§7.2–7.3, §7.5, §7.6) ไม่จำเป็นต้อง destroy/apply ทั้ง stack — VPC, RDS Aurora, ElastiCache, ALB ใช้เวลาสร้าง/ทำลายนานและไม่เกี่ยวข้องกับสิ่งที่ทดสอบ
+
+**Destroy/apply เฉพาะ compute layer (ClickHouse + web + worker):**
+
+```bash
+terraform destroy -target=module.ecs_clickhouse -target=module.ecs_langfuse_web -target=module.ecs_langfuse_worker
+```
+
+```bash
+terraform apply -target=module.ecs_clickhouse -target=module.ecs_langfuse_web -target=module.ecs_langfuse_worker
+```
+
+ทั้งสาม module นี้ไม่มี resource อื่นขึ้นกับมันโดยตรง — ALB target group อยู่ที่ `module.load_balancer`, AWS Backup vault ผูกกับ EFS ไม่ใช่ ECS — จึง destroy/สร้างใหม่ได้โดยไม่กระทบ VPC/RDS/ALB/EFS/S3/Backup vault เลย ข้อมูลใน Postgres และ AWS Backup recovery points จะยังอยู่ครบ
+
+> **ข้อควรระวัง:**
+> - ต้องใส่ `-target=` ให้ครบทุก flag เดิมทุกครั้งในรอบทดสอบ ไม่งั้น Terraform จะ plan เทียบกับทั้ง state (ไม่ apply อะไรนอกเป้าถ้าไม่ auto-approve เกิน scope — ปลอดภัย แค่ noisy)
+> - เป็นระยะ ๆ ควรรัน `terraform plan` เต็ม (ไม่ใส่ `-target`) เพื่อเช็คว่า state ไม่ drift ไปจาก config จริง
+> - วิธีนี้เหมาะกับ test case ที่เกี่ยวกับ ClickHouse เท่านั้น — ถ้าต้องทดสอบ TC-PG-* (Postgres/Aurora) หรือ TC-DESTROY-* (destroy ทั้ง stack) ต้องใช้ `terraform destroy`/`apply` แบบเต็มตามปกติ
+
+**ทางเลือกที่เร็วกว่านั้นอีก (ไม่ต้อง destroy เลย):** ใช้ `RESTORE DATABASE` ทับของเดิม หรือ `DROP DATABASE langfuse_system` แล้วให้ web/worker migrate ใหม่ตอน redeploy — จำลอง "fresh ClickHouse" ได้โดยไม่แตะ Terraform เลย เหมาะกับ TC-CHBK-* และ TC-CLUSTER-*
+
+---
+
+## 4. Out of Scope
 
 ต่อไปนี้ **ไม่อยู่ในขอบเขต** ของ test plan นี้ เพราะสถาปัตยกรรมปัจจุบันไม่รองรับ ไม่ใช่แค่ "ยังไม่ได้ทดสอบ":
 
@@ -44,7 +69,7 @@
 
 ---
 
-## 4. Known Issues Affecting Test Execution
+## 5. Known Issues Affecting Test Execution
 
 > **✅ แก้ไขแล้ว (resolved):** README.md หัวข้อ `ClickHouse Keeper` (บรรทัด ~420) เคยเขียนว่า macros ถูกใช้ใน `ON CLUSTER langfuse_cluster` statement ซึ่งไม่ตรงกับ config จริงหลัง commit `9acf3e3` ที่เปลี่ยนชื่อ cluster เป็น `default` (เพราะ Langfuse migrations ใช้ `ON CLUSTER default` เสมอ — ชื่อ cluster ที่ไม่ตรงกันเคยทำให้ table ถูกสร้างผิด database) ข้อความใน README.md ได้รับการอัปเดตให้ตรงกับ `default` แล้ว
 >
@@ -52,15 +77,15 @@
 
 ---
 
-## 5. Test Case Format
+## 6. Test Case Format
 
-แต่ละ subsection ใน §6 เริ่มด้วยตาราง summary (`Test ID | Scenario | Priority | Destructive?`) ตามด้วยรายละเอียดแต่ละ test case ในรูปแบบ **Preconditions / Steps / Expected Result** — คำสั่งที่ยาวหรือ multi-line (bash, SQL, JSON) จะไม่ถูกใส่ในตาราง เพราะอ่านยากและ escape ยุ่งยาก เช่นเดียวกับที่ README.md เองก็ไม่เคยใส่ command ยาวในตาราง
+แต่ละ subsection ใน §7 เริ่มด้วยตาราง summary (`Test ID | Scenario | Priority | Destructive?`) ตามด้วยรายละเอียดแต่ละ test case ในรูปแบบ **Preconditions / Steps / Expected Result** — คำสั่งที่ยาวหรือ multi-line (bash, SQL, JSON) จะไม่ถูกใส่ในตาราง เพราะอ่านยากและ escape ยุ่งยาก เช่นเดียวกับที่ README.md เองก็ไม่เคยใส่ command ยาวในตาราง
 
 Test case ที่มีคำเตือน `> ⚠` หมายถึง **destructive** — ต้องรันในสภาพแวดล้อมที่ไม่ใช่ production เท่านั้น
 
 ---
 
-## 6. Test Cases
+## 7. Test Cases
 
 ### 6.1 Pre-flight / Environment Checks
 
@@ -82,7 +107,7 @@ Test case ที่มีคำเตือน `> ⚠` หมายถึง **d
     --region $REGION \
     --query 'services[0].enableExecuteCommand'
   ```
-- **Expected Result:** คืนค่า `true` — หากเป็น `false` ทุก test case ใน §6.3 (TC-CHBK-*) จะ fail ที่ขั้นตอน exec เพราะพึ่งพา ECS Exec
+- **Expected Result:** คืนค่า `true` — หากเป็น `false` ทุก test case ใน §7.3 (TC-CHBK-*) จะ fail ที่ขั้นตอน exec เพราะพึ่งพา ECS Exec
 
 **TC-PRE-02 — Terraform outputs resolvable**
 - **Preconditions:** อยู่ใน working directory ที่มี Terraform state
@@ -298,7 +323,7 @@ Test case ที่มีคำเตือน `> ⚠` หมายถึง **d
 | TC-CLUSTER-01 | Cluster name เป็น `default` | High | No |
 | TC-CLUSTER-02 | Migration ลง table ถูก database/cluster | High | No |
 
-> ดู §4 Known Issues — README.md เคยมีข้อความอ้างอิงชื่อ cluster เก่า (`langfuse_cluster`) ที่ล้าสมัย แต่ได้แก้ไขแล้ว; test group นี้ยังคงไว้เป็น regression check
+> ดู §5 Known Issues — README.md เคยมีข้อความอ้างอิงชื่อ cluster เก่า (`langfuse_cluster`) ที่ล้าสมัย แต่ได้แก้ไขแล้ว; test group นี้ยังคงไว้เป็น regression check
 
 **TC-CLUSTER-01 — Cluster name ต้องเป็น `default`**
 - **Rationale:** commit `9acf3e3` เปลี่ยนชื่อ cluster จาก `langfuse_cluster` เป็น `default` เพราะ Langfuse migrations ใช้ `ON CLUSTER default` เสมอ การไม่ตรงกันเคยทำให้ table ถูกสร้างผิด database — test นี้ป้องกัน regression ของ config นี้
@@ -406,7 +431,7 @@ Test case ที่มีคำเตือน `> ⚠` หมายถึง **d
 
 ---
 
-## 7. Test Execution Log Template
+## 8. Test Execution Log Template
 
 | Date | Tester | Environment | Test IDs Run | Pass/Fail | Notes |
 |---|---|---|---|---|---|
@@ -414,7 +439,7 @@ Test case ที่มีคำเตือน `> ⚠` หมายถึง **d
 
 ---
 
-## 8. Appendix — Command Reference Cheat Sheet
+## 9. Appendix — Command Reference Cheat Sheet
 
 ตัวแปร environment ที่ใช้ซ้ำในหลาย test case — ตั้งค่าครั้งเดียวก่อนเริ่ม:
 
@@ -430,4 +455,4 @@ TASK_ARN=$(aws ecs list-tasks \
   --query 'taskArns[0]' --output text)
 ```
 
-ตัวแปรเหล่านี้ถูกใช้ซ้ำในเกือบทุก test case ใน §6.2–6.6 — อ้างอิงกลับมาที่นี่แทนการเขียนซ้ำทุกครั้ง
+ตัวแปรเหล่านี้ถูกใช้ซ้ำในเกือบทุก test case ใน §7.2–7.6 — อ้างอิงกลับมาที่นี่แทนการเขียนซ้ำทุกครั้ง
