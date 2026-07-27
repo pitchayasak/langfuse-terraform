@@ -116,7 +116,7 @@ Test case ที่มีคำเตือน `> ⚠` หมายถึง **d
   terraform output -raw ecs_cluster_name
   terraform output -raw s3_clickhouse_bucket_name
   ```
-- **Expected Result:** ทั้งสองคำสั่งคืนค่าไม่ว่างเปล่า — เก็บไว้เป็น `$CLUSTER` / `$CH_BUCKET` สำหรับ test case ถัดไป
+- **Expected Result:** ทั้งสองคำสั่งคืนค่าไม่ว่างเปล่า — เก็บไว้เป็น `$CLUSTER` / `$CH_BUCKET` สำหรับ test case ถัดไป (หมายเหตุ: `$CH_BUCKET` ใช้สำหรับ TC-EFS-* เท่านั้น ส่วน TC-CHBK-* ใช้ `$BACKUP_BUCKET` แยกต่างหาก — ดู TC-CHBK-01)
 
 **TC-PRE-03 — Fresh task definition ถูก deploy จริง**
 - **Preconditions:** เพิ่งรัน `terraform apply` มาไม่นาน
@@ -216,8 +216,11 @@ Test case ที่มีคำเตือน `> ⚠` หมายถึง **d
 - **Steps** (อ้างอิง README.md บรรทัด 345–366 — หมายเหตุ: argument `'', ''` ว่างเปล่าตั้งใจให้ ClickHouse ใช้ ECS task IAM role แทน credential ตรง ๆ ตาม commit `875766c`):
   ```bash
   CLUSTER=$(terraform output -raw ecs_cluster_name)
-  CH_BUCKET=$(terraform output -raw s3_clickhouse_bucket_name)
   REGION=ap-southeast-7
+
+  # Bucket แยกต่างหากสำหรับเก็บ native backup — ไม่ใช้ bucket เดียวกับ
+  # s3_clickhouse_bucket_name (ข้อมูล live) เพื่อไม่ให้ backup ปะปนกับข้อมูลจริง
+  BACKUP_BUCKET=psena-poc-th
 
   TASK_ARN=$(aws ecs list-tasks \
     --cluster $CLUSTER \
@@ -225,14 +228,18 @@ Test case ที่มีคำเตือน `> ⚠` หมายถึง **d
     --region $REGION \
     --query 'taskArns[0]' --output text)
 
+  TODAY=$(date +%Y-%m-%d)
+
   aws ecs execute-command \
     --cluster $CLUSTER --task $TASK_ARN --container clickhouse \
     --interactive --region $REGION \
-    --command "clickhouse-client -u langfuse --password \$CLICKHOUSE_PASSWORD \
-      --query \"BACKUP DATABASE langfuse_system \
-      TO S3('https://$CH_BUCKET.s3.$REGION.amazonaws.com/native-backups/\$(date +%Y-%m-%d)/', '', '')\""
+    --command "sh -c \"clickhouse-client -u langfuse --password \$CLICKHOUSE_PASSWORD \
+      --query \\\"BACKUP DATABASE langfuse_system \
+      TO S3('https://$BACKUP_BUCKET.s3.$REGION.amazonaws.com/native-backups/$TODAY/', '', '')\\\"\""
   ```
-- **Expected Result:** คำสั่งจบโดยไม่มี error; ปรากฏ prefix ใหม่ `native-backups/<วันที่วันนี้>/` ใน `$CH_BUCKET` (ตรวจด้วย `aws s3 ls s3://$CH_BUCKET/native-backups/`)
+- **Expected Result:** คำสั่งจบโดยไม่มี error; ปรากฏ prefix ใหม่ `native-backups/<วันที่วันนี้>/` ใน `$BACKUP_BUCKET` (ตรวจด้วย `aws s3 ls s3://$BACKUP_BUCKET/native-backups/`)
+- **หมายเหตุ:** ClickHouse task role ต้องมี IAM permission เข้าถึง `$BACKUP_BUCKET` ด้วย (ดู `modules/iam/main.tf` statement `S3BackupAccess`)
+- **⚠ หมายเหตุ (พบจากการทดสอบจริง):** ต้อง pre-compute `$TODAY` ก่อนแล้ว interpolate ตรงๆ — `\$(date +%Y-%m-%d)` (escape ไว้ให้ประมวลผลฝั่ง remote) ใช้ไม่ได้ เพราะ ECS Exec ไม่ evaluate อะไรเลยฝั่ง remote ถ้าไม่ครอบด้วย `sh -c` (คำสั่งข้างบนครอบด้วย `sh -c "..."` ไว้แล้ว จึงทำให้ `\$CLICKHOUSE_PASSWORD` expand ได้ถูกต้อง — **ถ้าไม่ครอบ `sh -c` แม้แต่ `\$CLICKHOUSE_PASSWORD` ก็จะไม่ expand เช่นกัน** ทำให้ authentication fail) ถ้าใช้ `\$(date...)` จะได้ error `Bad URI syntax` เพราะ ClickHouse เห็นสตริง `$(date +%Y-%m-%d)` เป็น literal text
 
 **TC-CHBK-02 — ตรวจสอบผ่าน system.backups**
 - **Steps:**
@@ -240,8 +247,8 @@ Test case ที่มีคำเตือน `> ⚠` หมายถึง **d
   aws ecs execute-command \
     --cluster $CLUSTER --task $TASK_ARN --container clickhouse \
     --interactive --region $REGION \
-    --command "clickhouse-client -u langfuse --password \$CLICKHOUSE_PASSWORD \
-      --query \"SELECT * FROM system.backups FORMAT Vertical\""
+    --command "sh -c \"clickhouse-client -u langfuse --password \$CLICKHOUSE_PASSWORD \
+      --query \\\"SELECT * FROM system.backups FORMAT Vertical\\\"\""
   ```
 - **Expected Result:** พบแถวที่มี `status = BACKUP_CREATED` ตรงกับ path/ชื่อ backup จาก TC-CHBK-01
 
@@ -256,9 +263,9 @@ Test case ที่มีคำเตือน `> ⚠` หมายถึง **d
   aws ecs execute-command \
     --cluster $CLUSTER --task $TASK_ARN --container clickhouse \
     --interactive --region $REGION \
-    --command "clickhouse-client -u langfuse --password \$CLICKHOUSE_PASSWORD \
-      --query \"RESTORE DATABASE langfuse_system \
-      FROM S3('https://$CH_BUCKET.s3.$REGION.amazonaws.com/native-backups/<YYYY-MM-DD>/', '', '')\""
+    --command "sh -c \"clickhouse-client -u langfuse --password \$CLICKHOUSE_PASSWORD \
+      --query \\\"RESTORE DATABASE langfuse_system \
+      FROM S3('https://$BACKUP_BUCKET.s3.$REGION.amazonaws.com/native-backups/<YYYY-MM-DD>/', '', '')\\\"\""
 
   aws ecs update-service --cluster $CLUSTER --service ${CLUSTER}-web --desired-count 1 --region $REGION
   aws ecs update-service --cluster $CLUSTER --service ${CLUSTER}-worker --desired-count 1 --region $REGION
@@ -332,8 +339,8 @@ Test case ที่มีคำเตือน `> ⚠` หมายถึง **d
   aws ecs execute-command \
     --cluster $CLUSTER --task $TASK_ARN --container clickhouse \
     --interactive --region $REGION \
-    --command "clickhouse-client -u langfuse --password \$CLICKHOUSE_PASSWORD \
-      --query \"SELECT cluster, shard_num, replica_num FROM system.clusters WHERE cluster = 'default' FORMAT Vertical\""
+    --command "sh -c \"clickhouse-client -u langfuse --password \$CLICKHOUSE_PASSWORD \
+      --query \\\"SELECT cluster, shard_num, replica_num FROM system.clusters WHERE cluster = 'default' FORMAT Vertical\\\"\""
   ```
 - **Expected Result:** พบ 1 แถว, `cluster = default`, `shard_num = 1`, `replica_num = 1`
 
@@ -445,7 +452,8 @@ Test case ที่มีคำเตือน `> ⚠` หมายถึง **d
 
 ```bash
 CLUSTER=$(terraform output -raw ecs_cluster_name)
-CH_BUCKET=$(terraform output -raw s3_clickhouse_bucket_name)
+CH_BUCKET=$(terraform output -raw s3_clickhouse_bucket_name)   # ใช้กับ TC-EFS-* (S3 data parts จริง)
+BACKUP_BUCKET=psena-poc-th                                       # ใช้กับ TC-CHBK-* (native backup แยกถังต่างหาก)
 REGION=ap-southeast-7
 
 TASK_ARN=$(aws ecs list-tasks \
@@ -455,4 +463,4 @@ TASK_ARN=$(aws ecs list-tasks \
   --query 'taskArns[0]' --output text)
 ```
 
-ตัวแปรเหล่านี้ถูกใช้ซ้ำในเกือบทุก test case ใน §7.2–7.6 — อ้างอิงกลับมาที่นี่แทนการเขียนซ้ำทุกครั้ง
+ตัวแปรเหล่านี้ถูกใช้ซ้ำในเกือบทุก test case ใน §7.2–7.6 — อ้างอิงกลับมาที่นี่แทนการเขียนซ้ำทุกครั้ง `CH_BUCKET` กับ `BACKUP_BUCKET` เป็นคนละ bucket กันโดยตั้งใจ (ไม่ให้ native backup ปะปนกับข้อมูล live)
