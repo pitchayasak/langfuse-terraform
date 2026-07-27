@@ -46,9 +46,9 @@ iam-setup\create-role.cmd my-custom-role-name
 
 The script will:
 1. Read your current AWS caller identity
-2. Create two managed policies (`langfuse-terraform-networking-storage`, `langfuse-terraform-app-services`)
+2. Create three managed policies (`langfuse-terraform-networking-storage`, `langfuse-terraform-app-services`, `langfuse-terraform-app-services-2` — split into two app-services policies because a single managed policy document can't exceed AWS's 6144-character limit)
 3. Create the role with a trust policy allowing your current identity to assume it
-4. Attach both policies to the role
+4. Attach all three policies to the role
 5. Print the role ARN at the end
 
 Copy the printed ARN — you will need it in Step 2.

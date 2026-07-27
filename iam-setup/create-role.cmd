@@ -14,6 +14,7 @@ if "%ROLE_NAME%"=="" set "ROLE_NAME=langfuse-terraform-deployer"
 
 set "POLICY_1_NAME=langfuse-terraform-networking-storage"
 set "POLICY_2_NAME=langfuse-terraform-app-services"
+set "POLICY_3_NAME=langfuse-terraform-app-services-2"
 set "SCRIPT_DIR=%~dp0"
 
 :: Remove trailing backslash from SCRIPT_DIR
@@ -132,7 +133,7 @@ if %ERRORLEVEL% EQU 0 (
     aws iam create-policy ^
         --policy-name "%POLICY_2_NAME%" ^
         --policy-document "file://%SCRIPT_DIR%\policy-app-services.json" ^
-        --description "Terraform: ECS, RDS, ElastiCache, IAM, Secrets, Logs, CloudMap for Langfuse" ^
+        --description "Terraform: ECS, RDS, ElastiCache, IAM roles, AWS Backup for Langfuse" ^
         --tags Key=Project,Value=langfuse Key=ManagedBy,Value=terraform ^
         --query Policy.Arn --output text
     if !ERRORLEVEL! NEQ 0 (
@@ -143,7 +144,43 @@ if %ERRORLEVEL% EQU 0 (
 )
 
 :: -------------------------------------------------------
-:: 4. Attach both policies to the role
+:: 4. Create / update managed policy — app services (part 2)
+::
+:: Split from POLICY_2 because a single managed policy document
+:: cannot exceed AWS's 6144-character limit.
+:: -------------------------------------------------------
+echo.
+echo ==^> Creating managed policy: %POLICY_3_NAME%...
+set "POLICY_3_ARN=arn:aws:iam::%ACCOUNT_ID%:policy/%POLICY_3_NAME%"
+
+aws iam get-policy --policy-arn "%POLICY_3_ARN%" >nul 2>&1
+if %ERRORLEVEL% EQU 0 (
+    echo     Policy exists. Creating a new version...
+    call :delete_oldest_policy_version "%POLICY_3_ARN%"
+    aws iam create-policy-version ^
+        --policy-arn "%POLICY_3_ARN%" ^
+        --policy-document "file://%SCRIPT_DIR%\policy-app-services-2.json" ^
+        --set-as-default
+    if !ERRORLEVEL! NEQ 0 (
+        echo ERROR: Failed to update policy version.
+        exit /b 1
+    )
+) else (
+    aws iam create-policy ^
+        --policy-name "%POLICY_3_NAME%" ^
+        --policy-document "file://%SCRIPT_DIR%\policy-app-services-2.json" ^
+        --description "Terraform: Secrets Manager, Logs, Route53, CloudMap, AutoScaling for Langfuse" ^
+        --tags Key=Project,Value=langfuse Key=ManagedBy,Value=terraform ^
+        --query Policy.Arn --output text
+    if !ERRORLEVEL! NEQ 0 (
+        echo ERROR: Failed to create policy.
+        exit /b 1
+    )
+    echo     Created: %POLICY_3_ARN%
+)
+
+:: -------------------------------------------------------
+:: 5. Attach all three policies to the role
 :: -------------------------------------------------------
 echo.
 echo ==^> Attaching policies to role...
@@ -161,8 +198,15 @@ if %ERRORLEVEL% NEQ 0 (
 )
 echo     Attached: %POLICY_2_NAME%
 
+aws iam attach-role-policy --role-name "%ROLE_NAME%" --policy-arn "%POLICY_3_ARN%"
+if %ERRORLEVEL% NEQ 0 (
+    echo ERROR: Failed to attach %POLICY_3_NAME%.
+    exit /b 1
+)
+echo     Attached: %POLICY_3_NAME%
+
 :: -------------------------------------------------------
-:: 5. Cleanup temp file and print summary
+:: 6. Cleanup temp file and print summary
 :: -------------------------------------------------------
 del "%TRUST_POLICY_FILE%" 2>nul
 
