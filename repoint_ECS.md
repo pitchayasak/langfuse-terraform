@@ -60,21 +60,122 @@ aws efs describe-mount-targets --file-system-id $NEW_EFS_ID --region $REGION --q
 
 ---
 
-## Phase 3: สร้าง access point ใหม่ (ต้อง match ค่าเดิมเป๊ะ — uid/gid 101, path `/clickhouse`)
+## Phase 3: ตรวจสอบ path จริงที่ AWS Backup วางข้อมูล restore ไว้
+
+> ⚠ **จุดที่พลาดง่ายที่สุดอันดับหนึ่ง:** AWS Backup restore EFS ไปยัง filesystem ใหม่ **ไม่ได้วางข้อมูลไว้ที่ path เดิม** (`/clickhouse`) — มันสร้าง subdirectory ใหม่ชื่อ `aws-backup-restore_<timestamp>/` แล้ววางข้อมูลที่ restore ไว้ข้างในนั้นแทน (เช่น `/aws-backup-restore_2026-07-27T05-06-24-914181044Z/clickhouse/...`) ถ้าสร้าง access point ชี้ที่ `/clickhouse` ตรงๆ โดยไม่เช็คก่อน EFS จะใช้ `CreationInfo` สร้าง directory เปล่าใหม่ให้แทนที่จะ error — ClickHouse จะ mount สำเร็จแต่มองไม่เห็นข้อมูลที่ restore มาเลย (ไม่มี error ให้เห็นตอนนั้นด้วย)
+
+สร้าง access point ชั่วคราวที่ root จริงของ filesystem เพื่อดูโครงสร้างจริงก่อน:
+
+```bash
+DEBUG_AP_ID=$(aws efs create-access-point \
+  --file-system-id $NEW_EFS_ID \
+  --posix-user Uid=0,Gid=0 \
+  --root-directory "Path=/" \
+  --region $REGION \
+  --query 'AccessPointId' --output text)
+```
+
+Mount ผ่าน one-off Fargate task (busybox) เพื่อดู top-level structure — ใช้ execution role/task role เดิมของ ClickHouse:
+
+```bash
+EXEC_ROLE_ARN=$(aws ecs describe-task-definition --task-definition ${PREFIX}-clickhouse --region $REGION --query 'taskDefinition.executionRoleArn' --output text)
+TASK_ROLE_ARN=$(aws ecs describe-task-definition --task-definition ${PREFIX}-clickhouse --region $REGION --query 'taskDefinition.taskRoleArn' --output text)
+
+cat > /tmp/debug-td.json << JSON
+{
+  "family": "temp-efs-debug",
+  "requiresCompatibilities": ["FARGATE"],
+  "networkMode": "awsvpc",
+  "cpu": "256",
+  "memory": "512",
+  "executionRoleArn": "$EXEC_ROLE_ARN",
+  "taskRoleArn": "$TASK_ROLE_ARN",
+  "containerDefinitions": [{
+    "name": "debug",
+    "image": "public.ecr.aws/docker/library/busybox:latest",
+    "entryPoint": ["/bin/sh", "-c"],
+    "command": ["sleep 600"],
+    "mountPoints": [{"sourceVolume": "efs-root", "containerPath": "/mnt/efs-root"}],
+    "logConfiguration": {
+      "logDriver": "awslogs",
+      "options": {"awslogs-group": "/ecs/${PREFIX}-clickhouse", "awslogs-region": "$REGION", "awslogs-stream-prefix": "debug"}
+    }
+  }],
+  "volumes": [{
+    "name": "efs-root",
+    "efsVolumeConfiguration": {
+      "fileSystemId": "$NEW_EFS_ID",
+      "transitEncryption": "ENABLED",
+      "authorizationConfig": {"accessPointId": "$DEBUG_AP_ID", "iam": "DISABLED"}
+    }
+  }]
+}
+JSON
+
+aws ecs register-task-definition --cli-input-json file:///tmp/debug-td.json --region $REGION --query 'taskDefinition.taskDefinitionArn' --output text
+```
+
+รัน one-off task ผ่าน security group เดียวกับ EFS mount target (จาก Phase 2):
+
+```bash
+SUBNETS_JSON=$(echo "$SUBNET_IDS" | tr -s '[:space:]' '\n' | jq -R . | jq -s -c .)
+
+DEBUG_TASK_ARN=$(aws ecs run-task \
+  --cluster $CLUSTER --task-definition temp-efs-debug \
+  --launch-type FARGATE --enable-execute-command \
+  --network-configuration "{\"awsvpcConfiguration\":{\"subnets\":$SUBNETS_JSON,\"securityGroups\":[\"$EFS_SG_ID\"],\"assignPublicIp\":\"DISABLED\"}}" \
+  --region $REGION --query 'tasks[0].taskArn' --output text)
+
+aws ecs wait tasks-running --cluster $CLUSTER --tasks $DEBUG_TASK_ARN --region $REGION
+```
+
+ดู top-level structure — หา directory ชื่อ `aws-backup-restore_<timestamp>`:
+
+```bash
+aws ecs execute-command --cluster $CLUSTER --task $DEBUG_TASK_ARN --container debug --interactive --region $REGION \
+  --command "sh -c 'ls -la /mnt/efs-root/'"
+```
+
+ดูข้างในว่ามี `clickhouse/` ซ้อนอยู่ไหม แล้วยืนยันว่ามีตารางจริงอยู่ (เช่น `traces.sql`):
+
+```bash
+aws ecs execute-command --cluster $CLUSTER --task $DEBUG_TASK_ARN --container debug --interactive --region $REGION \
+  --command "sh -c 'ls -la /mnt/efs-root/aws-backup-restore_*/clickhouse/metadata/langfuse_system/ 2>&1'"
+```
+
+จด path จริงไว้ใช้ในขั้นถัดไป:
+
+```bash
+REAL_PATH=/aws-backup-restore_<timestamp ที่เจอจริง>/clickhouse
+```
+
+Cleanup debug resources:
+
+```bash
+aws ecs stop-task --cluster $CLUSTER --task $DEBUG_TASK_ARN --region $REGION
+aws efs delete-access-point --access-point-id $DEBUG_AP_ID --region $REGION
+aws ecs deregister-task-definition --task-definition temp-efs-debug:1 --region $REGION
+```
+
+---
+
+## Phase 4: สร้าง access point ใหม่ ชี้ path จริงที่ตรวจสอบแล้ว (uid/gid 101)
 
 ```bash
 NEW_AP_ID=$(aws efs create-access-point \
   --file-system-id $NEW_EFS_ID \
   --posix-user Uid=101,Gid=101 \
-  --root-directory "Path=/clickhouse,CreationInfo={OwnerUid=101,OwnerGid=101,Permissions=755}" \
+  --root-directory "Path=$REAL_PATH" \
   --region $REGION \
   --query 'AccessPointId' --output text)
 echo $NEW_AP_ID
 ```
 
+> ไม่ใส่ `CreationInfo` ในขั้นนี้เพราะ path นี้ควรมีอยู่แล้วจากการ restore (ยืนยันแล้วใน Phase 3) — ถ้า path ผิด mount จะ error ทันทีตอน start container ดีกว่า silently สร้าง directory เปล่าใหม่ให้แบบที่พลาดได้ง่ายตอนใส่ `CreationInfo`
+
 ---
 
-## Phase 4: อนุญาต IAM ให้ ClickHouse task role เข้าถึง EFS ตัวใหม่
+## Phase 5: อนุญาต IAM ให้ ClickHouse task role เข้าถึง EFS ตัวใหม่
 
 > ⚠ **จุดที่พลาดง่ายที่สุด:** task definition ตั้ง `authorization_config { iam = "ENABLED" }` ไว้ (`modules/ecs_clickhouse/main.tf`) ดังนั้น IAM policy ของ task role ต้องอนุญาต EFS ARN ตัวใหม่ด้วย ไม่งั้น mount จะ fail ด้วย permission denied แม้ security group/mount target จะถูกต้องแล้ว — policy เดิมใน `modules/iam/main.tf` (`EFSAccess` statement) scope ไว้เฉพาะ EFS ARN เดิมเท่านั้น
 
@@ -97,7 +198,7 @@ EOF
 
 ---
 
-## Phase 5: Register task definition revision ใหม่ ชี้ EFS/access point ใหม่
+## Phase 6: Register task definition revision ใหม่ ชี้ EFS/access point ใหม่
 
 ```bash
 aws ecs describe-task-definition --task-definition ${PREFIX}-clickhouse --region $REGION --query 'taskDefinition' > /tmp/clickhouse-td.json
@@ -114,7 +215,7 @@ echo $NEW_TD_ARN
 
 ---
 
-## Phase 6: สั่ง ClickHouse service ให้ใช้ revision ใหม่และ start
+## Phase 7: สั่ง ClickHouse service ให้ใช้ revision ใหม่และ start
 
 ```bash
 aws ecs update-service --cluster $CLUSTER --service ${PREFIX}-clickhouse \
@@ -125,7 +226,7 @@ aws ecs wait services-stable --cluster $CLUSTER --services ${PREFIX}-clickhouse 
 
 ---
 
-## Phase 7: Verify ข้อมูล (เหมือน TC-CLUSTER-02 ใน TEST_PLAN_BACKUP_RESTORE.md)
+## Phase 8: Verify ข้อมูล (เหมือน TC-CLUSTER-02 ใน TEST_PLAN_BACKUP_RESTORE.md)
 
 ```bash
 TASK_ARN=$(aws ecs list-tasks --cluster $CLUSTER --service-name ${PREFIX}-clickhouse --region $REGION --query 'taskArns[0]' --output text)
@@ -138,7 +239,7 @@ aws ecs execute-command --cluster $CLUSTER --task $TASK_ARN --container clickhou
 
 ---
 
-## Phase 8: Start web + worker กลับ
+## Phase 9: Start web + worker กลับ
 
 ```bash
 aws ecs update-service --cluster $CLUSTER --service ${PREFIX}-web --desired-count 1 --region $REGION
@@ -155,8 +256,8 @@ aws ecs update-service --cluster $CLUSTER --service ${PREFIX}-worker --desired-c
 
 **ต้องเลือกทำอย่างใดอย่างหนึ่งก่อนใช้งานต่อเนื่อง:**
 
-1. **Copy ข้อมูลกลับ EFS เดิม (แนะนำ)** — mount ทั้งสอง EFS บน EC2/Fargate ชั่วคราว, `rsync` ข้อมูลจาก `$NEW_EFS_ID` กลับไป EFS เดิม, แล้ว repoint กลับไปใช้ config เดิม (revert Phase 5-6), ลบ policy ชั่วคราวจาก Phase 4 (`aws iam delete-role-policy --role-name $ROLE_NAME --policy-name temp-new-efs-access`), ลบ `$NEW_EFS_ID` ทิ้ง
+1. **Copy ข้อมูลกลับ EFS เดิม (แนะนำ)** — mount ทั้งสอง EFS บน EC2/Fargate ชั่วคราว, `rsync` ข้อมูลจาก `$NEW_EFS_ID` กลับไป EFS เดิม, แล้ว repoint กลับไปใช้ config เดิม (revert Phase 6-7), ลบ policy ชั่วคราวจาก Phase 5 (`aws iam delete-role-policy --role-name $ROLE_NAME --policy-name temp-new-efs-access`), ลบ `$NEW_EFS_ID` ทิ้ง
 
-2. **Import EFS ใหม่เข้า Terraform state แทนของเดิม** (ซับซ้อนกว่า เสี่ยงกว่า) — `terraform state rm` + `terraform import` สำหรับ `aws_efs_file_system.clickhouse`, `aws_efs_mount_target.clickhouse[*]`, `aws_efs_access_point.clickhouse` ทั้งหมด แล้วย้าย IAM policy จาก inline (Phase 4) เข้าไปอยู่ใน `modules/iam/main.tf` แบบถาวร, ลบ EFS เก่าด้วยมือ
+2. **Import EFS ใหม่เข้า Terraform state แทนของเดิม** (ซับซ้อนกว่า เสี่ยงกว่า) — `terraform state rm` + `terraform import` สำหรับ `aws_efs_file_system.clickhouse`, `aws_efs_mount_target.clickhouse[*]`, `aws_efs_access_point.clickhouse` ทั้งหมด แล้วย้าย IAM policy จาก inline (Phase 5) เข้าไปอยู่ใน `modules/iam/main.tf` แบบถาวร, ลบ EFS เก่าด้วยมือ
 
 ไม่ควรปล่อย state drift ค้างไว้นานเกินไป
