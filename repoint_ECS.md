@@ -44,10 +44,13 @@ VPC_ID=$(terraform output -raw vpc_id)
 SUBNET_IDS=$(aws ec2 describe-subnets --filters "Name=vpc-id,Values=$VPC_ID" "Name=tag:Name,Values=${PREFIX}-private-*" --region $REGION --query 'Subnets[*].SubnetId' --output text)
 EFS_SG_ID=$(aws ec2 describe-security-groups --filters "Name=group-name,Values=${PREFIX}-efs-*" --region $REGION --query 'SecurityGroups[0].GroupId' --output text)
 
-for SUBNET in $SUBNET_IDS; do
+echo "$SUBNET_IDS" | tr -s '[:space:]' '\n' | while read -r SUBNET; do
+  [ -z "$SUBNET" ] && continue
   aws efs create-mount-target --file-system-id $NEW_EFS_ID --subnet-id $SUBNET --security-groups $EFS_SG_ID --region $REGION
 done
 ```
+
+> ใช้ `tr` + `while read` แทน `for SUBNET in $SUBNET_IDS` เพราะ zsh ไม่ word-split unquoted variable ใน `for...in` แบบเดียวกับ bash (subnet ID ทั้งหมดจะถูกส่งเป็นค่าเดียวกันไปที่ `--subnet-id` ทำให้ `ValidationException`) — pattern นี้ทำงานเหมือนกันทั้ง bash และ zsh
 
 รอจนทุก mount target `available`:
 
