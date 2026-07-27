@@ -13,6 +13,7 @@ set -euo pipefail
 ROLE_NAME="${1:-langfuse-terraform-deployer}"
 POLICY_1_NAME="langfuse-terraform-networking-storage"
 POLICY_2_NAME="langfuse-terraform-app-services"
+POLICY_3_NAME="langfuse-terraform-app-services-2"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 echo "==> Getting current caller identity..."
@@ -127,14 +128,55 @@ else
   POLICY_2_ARN=$(aws iam create-policy \
     --policy-name "${POLICY_2_NAME}" \
     --policy-document "file://${SCRIPT_DIR}/policy-app-services.json" \
-    --description "Terraform: ECS, RDS, ElastiCache, IAM, Secrets, Logs, CloudMap for Langfuse" \
+    --description "Terraform: ECS, RDS, ElastiCache, IAM roles, AWS Backup for Langfuse" \
     --tags Key=Project,Value=langfuse Key=ManagedBy,Value=terraform \
     --query Policy.Arn --output text)
   echo "    Created: ${POLICY_2_ARN}"
 fi
 
 # -------------------------------------------------------
-# 4. Attach both policies to the role
+# 4. Create / update managed policy — app services (part 2)
+#
+# Split from POLICY_2 because a single managed policy document
+# cannot exceed AWS's 6144-character limit — combined, ECS + RDS +
+# ElastiCache + IAM + Backup + Secrets + Logs + Route53 +
+# ServiceDiscovery + AutoScaling no longer fit in one policy.
+# -------------------------------------------------------
+echo ""
+echo "==> Creating managed policy: ${POLICY_3_NAME}..."
+if aws iam get-policy --policy-arn "arn:aws:iam::${ACCOUNT_ID}:policy/${POLICY_3_NAME}" &>/dev/null; then
+  echo "    Policy exists. Creating a new version..."
+  VERSIONS=$(aws iam list-policy-versions \
+    --policy-arn "arn:aws:iam::${ACCOUNT_ID}:policy/${POLICY_3_NAME}" \
+    --query 'Versions[?IsDefaultVersion==`false`].VersionId' \
+    --output text)
+  for v in $VERSIONS; do
+    COUNT=$(echo "$VERSIONS" | wc -w | tr -d ' ')
+    if [ "$COUNT" -ge 4 ]; then
+      aws iam delete-policy-version \
+        --policy-arn "arn:aws:iam::${ACCOUNT_ID}:policy/${POLICY_3_NAME}" \
+        --version-id "$v"
+      echo "    Deleted old version: $v"
+      break
+    fi
+  done
+  aws iam create-policy-version \
+    --policy-arn "arn:aws:iam::${ACCOUNT_ID}:policy/${POLICY_3_NAME}" \
+    --policy-document "file://${SCRIPT_DIR}/policy-app-services-2.json" \
+    --set-as-default
+  POLICY_3_ARN="arn:aws:iam::${ACCOUNT_ID}:policy/${POLICY_3_NAME}"
+else
+  POLICY_3_ARN=$(aws iam create-policy \
+    --policy-name "${POLICY_3_NAME}" \
+    --policy-document "file://${SCRIPT_DIR}/policy-app-services-2.json" \
+    --description "Terraform: Secrets Manager, Logs, Route53, CloudMap, AutoScaling for Langfuse" \
+    --tags Key=Project,Value=langfuse Key=ManagedBy,Value=terraform \
+    --query Policy.Arn --output text)
+  echo "    Created: ${POLICY_3_ARN}"
+fi
+
+# -------------------------------------------------------
+# 5. Attach all three policies to the role
 # -------------------------------------------------------
 echo ""
 echo "==> Attaching policies to role..."
@@ -148,8 +190,13 @@ aws iam attach-role-policy \
   --policy-arn "arn:aws:iam::${ACCOUNT_ID}:policy/${POLICY_2_NAME}"
 echo "    Attached: ${POLICY_2_NAME}"
 
+aws iam attach-role-policy \
+  --role-name "${ROLE_NAME}" \
+  --policy-arn "arn:aws:iam::${ACCOUNT_ID}:policy/${POLICY_3_NAME}"
+echo "    Attached: ${POLICY_3_NAME}"
+
 # -------------------------------------------------------
-# 5. Print summary
+# 6. Print summary
 # -------------------------------------------------------
 ROLE_ARN="arn:aws:iam::${ACCOUNT_ID}:role/${ROLE_NAME}"
 

@@ -14,6 +14,7 @@ if "%ROLE_NAME%"=="" set "ROLE_NAME=langfuse-terraform-deployer"
 
 set "POLICY_1_NAME=langfuse-terraform-networking-storage"
 set "POLICY_2_NAME=langfuse-terraform-app-services"
+set "POLICY_3_NAME=langfuse-terraform-app-services-2"
 
 :: -------------------------------------------------------
 :: Get account ID
@@ -29,6 +30,7 @@ echo     Account : %ACCOUNT_ID%
 
 set "POLICY_1_ARN=arn:aws:iam::%ACCOUNT_ID%:policy/%POLICY_1_NAME%"
 set "POLICY_2_ARN=arn:aws:iam::%ACCOUNT_ID%:policy/%POLICY_2_NAME%"
+set "POLICY_3_ARN=arn:aws:iam::%ACCOUNT_ID%:policy/%POLICY_3_NAME%"
 set "ROLE_ARN=arn:aws:iam::%ACCOUNT_ID%:role/%ROLE_NAME%"
 
 echo.
@@ -36,6 +38,7 @@ echo  Will delete:
 echo    Role    : %ROLE_ARN%
 echo    Policy  : %POLICY_1_ARN%
 echo    Policy  : %POLICY_2_ARN%
+echo    Policy  : %POLICY_3_ARN%
 echo.
 set /p "CONFIRM=Type YES to confirm: "
 if /i not "%CONFIRM%"=="YES" (
@@ -69,6 +72,13 @@ if %ERRORLEVEL% EQU 0 (
     echo     %POLICY_2_NAME% was not attached ^(skipping^).
 )
 
+aws iam detach-role-policy --role-name "%ROLE_NAME%" --policy-arn "%POLICY_3_ARN%" >nul 2>&1
+if %ERRORLEVEL% EQU 0 (
+    echo     Detached: %POLICY_3_NAME%
+) else (
+    echo     %POLICY_3_NAME% was not attached ^(skipping^).
+)
+
 :: -------------------------------------------------------
 :: 2. Delete the role
 :: -------------------------------------------------------
@@ -93,6 +103,10 @@ call :delete_policy "%POLICY_1_ARN%"
 echo.
 echo ==^> Deleting managed policy: %POLICY_2_NAME%...
 call :delete_policy "%POLICY_2_ARN%"
+
+echo.
+echo ==^> Deleting managed policy: %POLICY_3_NAME%...
+call :delete_policy "%POLICY_3_ARN%"
 
 echo.
 echo ======================================================
