@@ -4,6 +4,8 @@
 
 > อ้างอิง [README.md](./README.md) หัวข้อ `AWS Backup (EFS metadata — automatic)` สำหรับวิธีสร้าง recovery point และเริ่ม restore job
 
+> ถ้าต้องการใช้งาน EFS ใหม่นี้ต่อเนื่องแบบถาวร (ไม่ใช่แค่ทดสอบ drill) ต้อง reconcile เข้า Terraform state ด้วย — ดูขั้นตอนเต็มที่ [EFS_RESTORE_MANUAL.md](./EFS_RESTORE_MANUAL.md)
+
 ---
 
 ## Phase 0: ตั้งตัวแปร
@@ -232,7 +234,7 @@ aws ecs wait services-stable --cluster $CLUSTER --services ${PREFIX}-clickhouse 
 TASK_ARN=$(aws ecs list-tasks --cluster $CLUSTER --service-name ${PREFIX}-clickhouse --region $REGION --query 'taskArns[0]' --output text)
 
 aws ecs execute-command --cluster $CLUSTER --task $TASK_ARN --container clickhouse --interactive --region $REGION \
-  --command "clickhouse-client -u langfuse --password \$CLICKHOUSE_PASSWORD --query \"SELECT count() FROM langfuse_system.traces\""
+  --command "sh -c \"clickhouse-client -u langfuse --password \$CLICKHOUSE_PASSWORD --query \\\"SELECT count() FROM langfuse_system.traces\\\"\""
 ```
 
 เทียบ row count กับ baseline ที่บันทึกไว้ก่อน restore
@@ -256,8 +258,8 @@ aws ecs update-service --cluster $CLUSTER --service ${PREFIX}-worker --desired-c
 
 **ต้องเลือกทำอย่างใดอย่างหนึ่งก่อนใช้งานต่อเนื่อง:**
 
-1. **Copy ข้อมูลกลับ EFS เดิม (แนะนำ)** — mount ทั้งสอง EFS บน EC2/Fargate ชั่วคราว, `rsync` ข้อมูลจาก `$NEW_EFS_ID` กลับไป EFS เดิม, แล้ว repoint กลับไปใช้ config เดิม (revert Phase 6-7), ลบ policy ชั่วคราวจาก Phase 5 (`aws iam delete-role-policy --role-name $ROLE_NAME --policy-name temp-new-efs-access`), ลบ `$NEW_EFS_ID` ทิ้ง
+1. **Copy ข้อมูลกลับ EFS เดิม** — mount ทั้งสอง EFS บน EC2/Fargate ชั่วคราว, `rsync` ข้อมูลจาก `$NEW_EFS_ID` กลับไป EFS เดิม, แล้ว repoint กลับไปใช้ config เดิม (revert Phase 6-7), ลบ policy ชั่วคราวจาก Phase 5 (`aws iam delete-role-policy --role-name $ROLE_NAME --policy-name temp-new-efs-access`), ลบ `$NEW_EFS_ID` ทิ้ง
 
-2. **Import EFS ใหม่เข้า Terraform state แทนของเดิม** (ซับซ้อนกว่า เสี่ยงกว่า) — `terraform state rm` + `terraform import` สำหรับ `aws_efs_file_system.clickhouse`, `aws_efs_mount_target.clickhouse[*]`, `aws_efs_access_point.clickhouse` ทั้งหมด แล้วย้าย IAM policy จาก inline (Phase 5) เข้าไปอยู่ใน `modules/iam/main.tf` แบบถาวร, ลบ EFS เก่าด้วยมือ
+2. **Import EFS ใหม่เข้า Terraform state แทนของเดิม (แนะนำถ้าจะใช้งานต่อเนื่อง)** — ดูขั้นตอนละเอียดทั้งหมดใน [EFS_RESTORE_MANUAL.md](./EFS_RESTORE_MANUAL.md) ส่วนที่ 3 (ทำความสะอาด path ข้อมูลก่อน, `terraform state rm` + `terraform import` ให้ตรง subnet index, verify plan ว่าไม่มี diff ที่ไม่คาดคิด, apply แล้ว cutover service) — IAM policy ไม่ต้องแก้ code เพิ่มเพราะ `modules/iam/main.tf` อ้าง `var.efs_arn` อยู่แล้ว จะอัปเดตเป็น EFS ตัวใหม่ให้อัตโนมัติตอน apply, เหลือแค่ลบ inline policy ชั่วคราวจาก Phase 5 ทิ้ง แล้วลบ EFS เก่าด้วยมือ (ดูส่วนที่ 4 ของ manual)
 
 ไม่ควรปล่อย state drift ค้างไว้นานเกินไป

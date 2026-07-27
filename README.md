@@ -344,10 +344,14 @@ ClickHouse's built-in `BACKUP` command creates a consistent snapshot of both sch
 **Run a backup:**
 
 ```bash
-# 1. Get cluster name, task ID, and ClickHouse S3 bucket from Terraform outputs
+# 1. Get cluster name and task ID from Terraform outputs
 CLUSTER=$(terraform output -raw ecs_cluster_name)
-CH_BUCKET=$(terraform output -raw s3_clickhouse_bucket_name)
 REGION=ap-southeast-7   # เปลี่ยนตาม region ที่ deploy
+
+# Bucket แยกต่างหากสำหรับเก็บ native backup — ไม่ใช้ bucket เดียวกับ
+# s3_clickhouse_bucket_name (ที่เก็บ S3 data parts จริงของ ClickHouse)
+# เพื่อไม่ให้ backup อยู่ปะปนกับข้อมูล live ในถังเดียวกัน
+BACKUP_BUCKET=psena-poc-th
 
 TASK_ARN=$(aws ecs list-tasks \
   --cluster $CLUSTER \
@@ -356,16 +360,22 @@ TASK_ARN=$(aws ecs list-tasks \
   --query 'taskArns[0]' --output text)
 
 # 2. Run backup via ECS Exec
+TODAY=$(date +%Y-%m-%d)
+
 aws ecs execute-command \
   --cluster $CLUSTER \
   --task $TASK_ARN \
   --container clickhouse \
   --interactive \
   --region $REGION \
-  --command "clickhouse-client -u langfuse --password \$CLICKHOUSE_PASSWORD \
-    --query \"BACKUP DATABASE langfuse_system \
-    TO S3('https://$CH_BUCKET.s3.$REGION.amazonaws.com/native-backups/\$(date +%Y-%m-%d)/', '', '')\""
+  --command "sh -c \"clickhouse-client -u langfuse --password \$CLICKHOUSE_PASSWORD \
+    --query \\\"BACKUP DATABASE langfuse_system \
+    TO S3('https://$BACKUP_BUCKET.s3.$REGION.amazonaws.com/native-backups/$TODAY/', '', '')\\\"\""
 ```
+
+> ⚠ ต้อง pre-compute `$TODAY` ในเชลล์ฝั่ง local แล้ว interpolate เข้าไปตรงๆ — `\$(date +%Y-%m-%d)` (escape ไว้ให้ประมวลผลฝั่ง remote) **ใช้ไม่ได้** เพราะ ECS Exec ไม่ evaluate อะไรเลยฝั่ง remote ถ้าไม่ครอบด้วย `sh -c` (คำสั่งข้างบนครอบด้วย `sh -c "..."` ไว้แล้ว จึงทำให้ `\$CLICKHOUSE_PASSWORD` expand ได้ถูกต้อง — **ถ้าไม่ครอบ `sh -c` แม้แต่ `\$CLICKHOUSE_PASSWORD` ก็จะไม่ expand เช่นกัน** ทำให้ authentication fail เพราะส่ง literal string `$CLICKHOUSE_PASSWORD` เป็น password ตรงๆ) ถ้าใช้ `\$(date...)` จะได้ error `Bad URI syntax` เพราะ ClickHouse เห็นสตริง `$(date +%Y-%m-%d)` เป็น literal text ไม่ใช่วันที่จริง
+>
+> ⚠ `$BACKUP_BUCKET` (`psena-poc-th`) เป็น bucket ที่มีอยู่นอก Terraform — ClickHouse task role ต้องมี IAM permission เข้าถึง bucket นี้ด้วย (ดู `modules/iam/main.tf` statement `S3BackupAccess`)
 
 **Check backup status:**
 
@@ -376,8 +386,8 @@ aws ecs execute-command \
   --container clickhouse \
   --interactive \
   --region $REGION \
-  --command "clickhouse-client -u langfuse --password \$CLICKHOUSE_PASSWORD \
-    --query \"SELECT * FROM system.backups FORMAT Vertical\""
+  --command "sh -c \"clickhouse-client -u langfuse --password \$CLICKHOUSE_PASSWORD \
+    --query \\\"SELECT * FROM system.backups FORMAT Vertical\\\"\""
 ```
 
 **Restore from ClickHouse native backup:**
@@ -394,17 +404,16 @@ aws ecs execute-command \
   --container clickhouse \
   --interactive \
   --region $REGION \
-  --command "clickhouse-client -u langfuse --password \$CLICKHOUSE_PASSWORD \
-    --query \"RESTORE DATABASE langfuse_system \
-    FROM S3('https://$CH_BUCKET.s3.$REGION.amazonaws.com/native-backups/2025-01-15/', '', '')\""
+  --command "sh -c \"clickhouse-client -u langfuse --password \$CLICKHOUSE_PASSWORD \
+    --query \\\"RESTORE DATABASE langfuse_system \
+    FROM S3('https://$BACKUP_BUCKET.s3.$REGION.amazonaws.com/native-backups/2025-01-15/', '', '')\\\"\""
 
 # Restart services
 aws ecs update-service --cluster $CLUSTER --service ${CLUSTER}-web --desired-count 1 --region $REGION
 aws ecs update-service --cluster $CLUSTER --service ${CLUSTER}-worker --desired-count 1 --region $REGION
 ```
 
-> ClickHouse native backup เก็บใน **ClickHouse S3 bucket** (`s3_clickhouse_bucket_name`) ใต้ prefix `native-backups/`  
-> แยกจาก S3 data parts ที่อยู่ใต้ prefix `data/` ในถังเดียวกัน
+> ClickHouse native backup เก็บใน **bucket แยกต่างหาก** (`psena-poc-th`) ใต้ prefix `native-backups/` — **ไม่ใช่** bucket เดียวกับ `s3_clickhouse_bucket_name` ที่เก็บ S3 data parts จริง เพื่อไม่ให้ backup ปะปนกับข้อมูล live
 
 ---
 
